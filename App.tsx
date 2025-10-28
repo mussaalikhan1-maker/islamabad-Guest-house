@@ -1,7 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
-import { WifiIcon, ParkingIcon, AirConditionerIcon, BedIcon, StarIcon, PriceTagIcon, PhoneIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, FacebookIcon, InstagramIcon, FilledStarIcon } from './components/Icons';
-import type { Feature, Review } from './types';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { GoogleGenAI, Type } from '@google/genai';
+import { WifiIcon, ParkingIcon, AirConditionerIcon, BedIcon, StarIcon, PriceTagIcon, PhoneIcon, CloseIcon, ChevronLeftIcon, ChevronRightIcon, FacebookIcon, InstagramIcon, FilledStarIcon, MapPinIcon, Loader, ExternalLinkIcon } from './components/Icons';
+import type { Feature, Review, GroundingLink, MapData } from './types';
 
 const CONTACT_NUMBER = "03000466682";
 const CONTACT_LINK = `tel:${CONTACT_NUMBER}`;
@@ -42,27 +43,27 @@ const features: Feature[] = [
 const galleryImages: { src: string; caption: string }[] = [
   {
     src: 'https://images.unsplash.com/photo-1598928506311-c55ded91a20c?q=80&w=2070&auto=format&fit=crop',
-    caption: 'Relax in our modern and spacious rooms, designed for ultimate comfort.',
+    caption: 'Step into a realm of tranquility. Our spacious rooms are meticulously designed with a modern aesthetic, plush furnishings, and calming tones to ensure your ultimate comfort.',
   },
   {
     src: 'https://images.unsplash.com/photo-1616594039964-ae9021a400a0?q=80&w=1932&auto=format&fit=crop',
-    caption: 'Unwind in our comfortable lounge, the perfect place to relax.',
+    caption: 'Our inviting lounge area offers a perfect blend of comfort and style. It\'s the ideal spot to unwind with a book, catch up on emails, or socialize with other guests.',
   },
   {
     src: 'https://images.unsplash.com/photo-1582268611958-ebfd161ef9cf?q=80&w=2070&auto=format&fit=crop',
-    caption: 'Modern and clean bathrooms with all the essential amenities.',
+    caption: 'Immaculate and modern, our bathrooms are equipped with high-quality fixtures and all the essential amenities to help you refresh and rejuvenate during your stay.',
   },
   {
     src: 'https://images.unsplash.com/photo-1540518614846-7eded433c457?q=80&w=2057&auto=format&fit=crop',
-    caption: 'Well-appointed rooms with plush bedding for a restful night\'s sleep.',
+    caption: 'Drift into a peaceful slumber on our premium, plush bedding. Every room is a sanctuary designed for a restful night\'s sleep after a day of exploring Islamabad.',
   },
   {
     src: 'https://images.unsplash.com/photo-1618773928121-c32242e63f39?q=80&w=2070&auto=format&fit=crop',
-    caption: 'Experience a warm welcome and exceptional service from the moment you arrive.',
+    caption: 'Experience the warm, welcoming ambiance from the moment you step in. Our commitment to excellent service ensures a personalized and memorable hospitality experience.',
   },
   {
     src: 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?q=80&w=2070&auto=format&fit=crop',
-    caption: 'Each room is thoughtfully designed with attention to detail.',
+    caption: 'Every corner of our guest house is thoughtfully designed with a keen eye for detail, blending functionality with elegance to create a truly comfortable and beautiful environment.',
   },
 ];
 
@@ -156,25 +157,174 @@ const StarRating: React.FC<{ rating: number }> = ({ rating }) => (
 const App: React.FC = () => {
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const [isZoomedIn, setIsZoomedIn] = useState(false);
+  const [mapData, setMapData] = useState<MapData | null>(null);
+  const [groundingLinks, setGroundingLinks] = useState<GroundingLink[]>([]);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const locationSectionRef = useRef<HTMLElement>(null);
+  const locationFetchInitiated = useRef(false);
 
   const openLightbox = (index: number) => {
     setCurrentImageIndex(index);
     setIsLightboxOpen(true);
+    setIsZoomedIn(false);
   };
 
   const closeLightbox = () => {
     setIsLightboxOpen(false);
+    setIsZoomedIn(false);
   };
 
   const showNextImage = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setCurrentImageIndex(prevIndex => (prevIndex + 1) % galleryImages.length);
+    setIsZoomedIn(false);
   };
 
   const showPrevImage = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setCurrentImageIndex(prevIndex => (prevIndex - 1 + galleryImages.length) % galleryImages.length);
+    setIsZoomedIn(false);
   };
+
+  const handleFetchLocationInfo = useCallback(async () => {
+    if (locationFetchInitiated.current) return;
+    locationFetchInitiated.current = true;
+
+    setIsLocating(true);
+    setLocationError(null);
+    setMapData(null);
+    setGroundingLinks([]);
+
+    if (!navigator.geolocation) {
+      setLocationError("Geolocation is not supported by your browser.");
+      setIsLocating(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+
+          const responseSchema = {
+            type: Type.OBJECT,
+            properties: {
+              directions: {
+                type: Type.STRING,
+                description: "Turn-by-turn directions from the user's location to the guest house, formatted as a single string with newlines."
+              },
+              guestHouse: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING, description: "The name of the guest house." },
+                  description: { type: Type.STRING, description: "A brief description of the guest house location." },
+                  latitude: { type: Type.NUMBER, description: "Latitude of the guest house." },
+                  longitude: { type: Type.NUMBER, description: "Longitude of the guest house." },
+                },
+                required: ['name', 'latitude', 'longitude']
+              },
+              nearbyPlaces: {
+                type: Type.ARRAY,
+                description: "A list of 5 popular tourist attractions or restaurants near the guest house.",
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING, description: "Name of the place." },
+                    description: { type: Type.STRING, description: "A brief, one-sentence description of the place." },
+                    latitude: { type: Type.NUMBER, description: "Latitude of the place." },
+                    longitude: { type: Type.NUMBER, description: "Longitude of the place." },
+                  },
+                  required: ['name', 'description', 'latitude', 'longitude']
+                }
+              }
+            },
+            required: ['directions', 'guestHouse', 'nearbyPlaces']
+          };
+
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: `Based on my current location (latitude: ${position.coords.latitude}, longitude: ${position.coords.longitude}), provide directions to 'Islamabad Guest House, Islamabad'. Also, find its coordinates. Then, list exactly 5 popular tourist attractions or restaurants near the guest house, including a brief, one-sentence description and the precise latitude and longitude for each.`,
+            config: {
+              tools: [{ googleMaps: {} }],
+              responseMimeType: "application/json",
+              responseSchema: responseSchema,
+              toolConfig: {
+                retrievalConfig: {
+                  latLng: {
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                  },
+                },
+              },
+            },
+          });
+          
+          const resultText = response.text;
+          const resultData: MapData = JSON.parse(resultText);
+          setMapData(resultData);
+
+          const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+          if (chunks) {
+            const links: GroundingLink[] = chunks
+              .map((chunk: any) => ({
+                uri: chunk.maps?.uri || '',
+                title: chunk.maps?.title || 'Source',
+              }))
+              .filter((link: GroundingLink) => link.uri);
+            setGroundingLinks(links);
+          }
+        } catch (error) {
+          console.error("Error fetching location info from Gemini:", error);
+          setLocationError("Sorry, we couldn't fetch location details right now. Please try again later.");
+        } finally {
+          setIsLocating(false);
+        }
+      },
+      (error) => {
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            setLocationError("You denied the request for Geolocation.");
+            break;
+          case error.POSITION_UNAVAILABLE:
+            setLocationError("Location information is unavailable.");
+            break;
+          case error.TIMEOUT:
+            setLocationError("The request to get user location timed out.");
+            break;
+          default:
+            setLocationError("An unknown error occurred.");
+            break;
+        }
+        setIsLocating(false);
+      }
+    );
+  }, []);
+
+  useEffect(() => {
+    const currentRef = locationSectionRef.current;
+    if (!currentRef) return;
+
+    const observer = new IntersectionObserver(
+        ([entry]) => {
+            if (entry.isIntersecting) {
+                handleFetchLocationInfo();
+                observer.unobserve(currentRef); 
+            }
+        },
+        {
+            threshold: 0.1, 
+        }
+    );
+
+    observer.observe(currentRef);
+
+    return () => {
+        observer.disconnect();
+    };
+  }, [handleFetchLocationInfo]);
 
   useEffect(() => {
     if (!isLightboxOpen) return;
@@ -247,6 +397,91 @@ const App: React.FC = () => {
           </div>
         </section>
 
+        <section id="location" className="py-16 md:py-24 bg-stone-50" ref={locationSectionRef}>
+          <div className="container mx-auto px-6">
+            <div className="text-center mb-12">
+              <h2 className="text-3xl md:text-4xl font-extrabold text-gray-900">Find Us & Explore</h2>
+              <p className="mt-4 text-lg text-gray-600 max-w-2xl mx-auto">Get personalized directions and discover popular attractions near you.</p>
+            </div>
+            <div className="max-w-3xl mx-auto text-center">
+              <button 
+                onClick={handleFetchLocationInfo} 
+                disabled={isLocating}
+                className="inline-flex items-center justify-center bg-green-700 text-white font-bold text-lg py-3 px-8 rounded-full shadow-lg hover:bg-green-800 transition-all transform hover:scale-105 disabled:bg-gray-400 disabled:scale-100"
+              >
+                <MapPinIcon />
+                <span className='ml-2'>Show Directions & Nearby Places</span>
+              </button>
+
+              {isLocating && <Loader />}
+              {locationError && <p className="mt-4 text-red-600 bg-red-100 p-3 rounded-lg">{locationError}</p>}
+              
+              {mapData && (
+                <div className="mt-8 text-left bg-white p-6 rounded-xl shadow-lg animate-fade-in space-y-8">
+                    <div>
+                        <h3 className="text-2xl font-bold text-gray-800 mb-4">Your Personalized Map</h3>
+                        <div className="relative h-96 w-full rounded-lg overflow-hidden border-2 border-gray-200">
+                            <iframe
+                                src={`https://maps.google.com/maps?q=${mapData.guestHouse.latitude},${mapData.guestHouse.longitude}&z=15&output=embed`}
+                                className="absolute top-0 left-0 w-full h-full"
+                                style={{ border: 0 }}
+                                allowFullScreen={false}
+                                loading="lazy"
+                                referrerPolicy="no-referrer-when-downgrade"
+                                title={`Map of ${mapData.guestHouse.name}`}
+                            ></iframe>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 className="text-2xl font-bold text-gray-800 mb-4">Directions to {mapData.guestHouse.name}</h3>
+                        <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{mapData.directions}</p>
+                    </div>
+
+                    <div>
+                        <h3 className="text-2xl font-bold text-gray-800 mb-4">Nearby Attractions & Restaurants</h3>
+                        <ul className="space-y-4">
+                            {mapData.nearbyPlaces.map((place, index) => (
+                                <li key={index} className="p-4 bg-stone-100 rounded-lg border border-gray-200">
+                                    <div className="flex justify-between items-start gap-4">
+                                        <div>
+                                            <h4 className="font-bold text-gray-900">{place.name}</h4>
+                                            <p className="text-gray-600 mt-1">{place.description}</p>
+                                        </div>
+                                        <a
+                                            href={`https://www.google.com/maps?q=${place.latitude},${place.longitude}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center text-sm bg-green-100 text-green-800 font-semibold py-1 px-3 rounded-full hover:bg-green-200 transition-colors flex-shrink-0"
+                                        >
+                                            View Map <ExternalLinkIcon />
+                                        </a>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    {groundingLinks.length > 0 && (
+                        <div className="border-t pt-6">
+                            <h4 className="font-bold text-gray-800 mb-2">Sources from Google Maps:</h4>
+                            <ul className="list-disc list-inside space-y-1">
+                                {groundingLinks.map((link, index) => (
+                                    <li key={index}>
+                                        <a href={link.uri} target="_blank" rel="noopener noreferrer" className="text-green-700 hover:underline">
+                                            {link.title}
+                                        </a>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         <section id="contact" className="bg-green-700 text-white">
           <div className="container mx-auto px-6 py-16 text-center">
             <h2 className="text-3xl md:text-4xl font-extrabold mb-4">Ready for a Memorable Stay?</h2>
@@ -312,9 +547,10 @@ const App: React.FC = () => {
               <img
                 src={galleryImages[currentImageIndex].src}
                 alt={galleryImages[currentImageIndex].caption}
-                className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
+                className={`max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl transition-transform duration-300 ${isZoomedIn ? 'scale-125 md:scale-150' : 'scale-100'} ${isZoomedIn ? 'cursor-zoom-out' : 'cursor-zoom-in'}`}
+                onClick={() => setIsZoomedIn(!isZoomedIn)}
               />
-              <p className="text-white mt-4 text-base md:text-lg bg-black/50 p-2 rounded-md inline-block">
+              <p className="text-white mt-4 text-base md:text-lg bg-black/50 p-2 rounded-md inline-block max-w-2xl">
                 {galleryImages[currentImageIndex].caption}
               </p>
             </div>

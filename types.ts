@@ -12,3 +12,21 @@ export interface Review {
   rating: number;
   comment: string;
 }
+
+export interface GroundingLink {
+  uri: string;
+  title: string;
+}
+
+export interface Place {
+  name: string;
+  description: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface MapData {
+  directions: string;
+  guestHouse: Place;
+  nearbyPlaces: Place[];
+}
